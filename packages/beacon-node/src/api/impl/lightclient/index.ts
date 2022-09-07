@@ -1,6 +1,6 @@
 import {routes, ServerApi} from "@lodestar/api";
 import {fromHexString} from "@chainsafe/ssz";
-import {SyncPeriod} from "@lodestar/types";
+import {SyncPeriod, Epoch} from "@lodestar/types";
 import {MAX_REQUEST_LIGHT_CLIENT_UPDATES, MAX_REQUEST_LIGHT_CLIENT_COMMITTEE_HASHES} from "@lodestar/params";
 import {ApiModules} from "../types.js";
 
@@ -19,6 +19,14 @@ export function getLightclientApi({
         version: config.getForkName(update.attestedHeader.beacon.slot),
         data: update,
       }));
+    },
+
+    async getEpochUpdates(epoch: Epoch) {
+      const data = await chain.lightClientServer.getEpochUpdates(epoch);
+      if (data === null) {
+        throw Error("No update by epoch available");
+      }
+      return {version: config.getForkName(data.attestedHeader.beacon.slot), data};
     },
 
     async getOptimisticUpdate() {
