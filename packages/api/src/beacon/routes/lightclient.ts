@@ -1,4 +1,4 @@
-import {ssz, SyncPeriod, allForks} from "@lodestar/types";
+import {ssz, SyncPeriod, allForks, Epoch} from "@lodestar/types";
 import {ForkName, isForkLightClient} from "@lodestar/params";
 import {
   ArrayOf,
@@ -33,6 +33,14 @@ export type Api = {
         version: ForkName;
         data: allForks.LightClientUpdate;
       }[];
+    }>
+  >;
+  getEpochUpdates(epoch: Epoch): Promise<
+    ApiClientResponse<{
+      [HttpStatusCode.OK]: {
+        version: ForkName;
+        data: allForks.LightClientFinalityUpdate;
+      };
     }>
   >;
   /**
@@ -90,6 +98,7 @@ export type Api = {
  */
 export const routesData: RoutesData<Api> = {
   getUpdates: {url: "/eth/v1/beacon/light_client/updates", method: "GET"},
+  getEpochUpdates: {url: "/eth/v1/beacon/light_client/updates_epoch", method: "GET"},
   getOptimisticUpdate: {url: "/eth/v1/beacon/light_client/optimistic_update", method: "GET"},
   getFinalityUpdate: {url: "/eth/v1/beacon/light_client/finality_update", method: "GET"},
   getBootstrap: {url: "/eth/v1/beacon/light_client/bootstrap/{block_root}", method: "GET"},
@@ -99,6 +108,7 @@ export const routesData: RoutesData<Api> = {
 /* eslint-disable @typescript-eslint/naming-convention */
 export type ReqTypes = {
   getUpdates: {query: {start_period: number; count: number}};
+  getEpochUpdates: {query: {epoch: number}};
   getOptimisticUpdate: ReqEmpty;
   getFinalityUpdate: ReqEmpty;
   getBootstrap: {params: {block_root: string}};
@@ -112,7 +122,11 @@ export function getReqSerializers(): ReqSerializers<Api, ReqTypes> {
       parseReq: ({query}) => [query.start_period, query.count],
       schema: {query: {start_period: Schema.UintRequired, count: Schema.UintRequired}},
     },
-
+    getEpochUpdates: {
+      writeReq: (epoch) => ({query: {epoch}}),
+      parseReq: ({query}) => [query.epoch],
+      schema: {query: {epoch: Schema.UintRequired}},
+    },
     getOptimisticUpdate: reqEmpty,
     getFinalityUpdate: reqEmpty,
 
@@ -142,6 +156,11 @@ export function getReturnTypes(): ReturnTypes<Api> {
 
   return {
     getUpdates,
+    getEpochUpdates: WithVersion((fork: ForkName) =>
+      isForkLightClient(fork)
+        ? ssz.allForksLightClient[fork].LightClientFinalityUpdate
+        : ssz.altair.LightClientFinalityUpdate
+    ),
     getOptimisticUpdate: WithVersion((fork: ForkName) =>
       isForkLightClient(fork)
         ? ssz.allForksLightClient[fork].LightClientOptimisticUpdate

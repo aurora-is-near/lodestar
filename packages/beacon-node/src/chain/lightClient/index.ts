@@ -1,4 +1,4 @@
-import {altair, phase0, Root, RootHex, Slot, ssz, SyncPeriod, allForks} from "@lodestar/types";
+import {altair, phase0, Root, RootHex, Slot, ssz, SyncPeriod, allForks, Epoch} from "@lodestar/types";
 import {IChainForkConfig} from "@lodestar/config";
 import {
   CachedBeaconStateAltair,
@@ -6,6 +6,7 @@ import {
   computeSyncPeriodAtEpoch,
   computeSyncPeriodAtSlot,
   executionPayloadToPayloadHeader,
+  computeEpochAtSlot,
 } from "@lodestar/state-transition";
 import {
   isBetterUpdate,
@@ -243,8 +244,9 @@ export class LightClientServer {
     // So rootSigned will always equal to the parentBlock.
     const signedBlockRoot = block.parentRoot;
     const syncPeriod = computeSyncPeriodAtSlot(block.slot);
+    const syncEpoch = computeEpochAtSlot(block.slot);
 
-    this.onSyncAggregate(syncPeriod, block.body.syncAggregate, block.slot, signedBlockRoot).catch((e) => {
+    this.onSyncAggregate(syncPeriod, syncEpoch, block.body.syncAggregate, block.slot, signedBlockRoot).catch((e) => {
       this.logger.error("Error onSyncAggregate", {}, e);
       this.metrics?.lightclientServer.onSyncAggregate.inc({event: "error"});
     });
@@ -327,6 +329,15 @@ export class LightClientServer {
     }
 
     return syncCommitteeWitness.currentSyncCommitteeRoot;
+  }
+
+  async getEpochUpdates(epoch: Epoch): Promise<allForks.LightClientUpdate> {
+    // Signature data
+    const update = await this.db.bestEpochLightClientUpdate.get(epoch);
+    if (!update) {
+      throw Error(`No update available for epoch ${epoch}`);
+    }
+    return update;
   }
 
   /**
@@ -450,6 +461,7 @@ export class LightClientServer {
    */
   private async onSyncAggregate(
     syncPeriod: SyncPeriod,
+    syncEpoch: Epoch,
     syncAggregate: altair.SyncAggregate,
     signatureSlot: Slot,
     signedBlockRoot: Root
@@ -532,11 +544,21 @@ export class LightClientServer {
 
     // Check if this update is better, otherwise ignore
     try {
-      await this.maybeStoreNewBestUpdate(syncPeriod, syncAggregate, signatureSlot, attestedData);
+      await this.maybeStoreNewBestUpdate(syncPeriod, syncEpoch, syncAggregate, signatureSlot, attestedData);
     } catch (e) {
       this.logger.error(
         "Error updating best LightClientUpdate",
-        {syncPeriod, slot: attestedHeader.beacon.slot, blockRoot: toHexString(attestedData.blockRoot)},
+        {syncPeriod, syncEpoch, slot: attestedHeader.beacon.slot, blockRoot: toHexString(attestedData.blockRoot)},
+        e as Error
+      );
+    }
+
+    try {
+      await this.maybeStoreNewBestEpochUpdate(syncPeriod, syncEpoch, syncAggregate, signatureSlot, attestedData);
+    } catch (e) {
+      this.logger.error(
+        "Error updating best LightClientUpdate",
+        {syncPeriod, syncEpoch, slot: attestedHeader.beacon.slot, blockRoot: toHexString(attestedData.blockRoot)},
         e as Error
       );
     }
@@ -548,6 +570,7 @@ export class LightClientServer {
    */
   private async maybeStoreNewBestUpdate(
     syncPeriod: SyncPeriod,
+    syncEpoch: Epoch,
     syncAggregate: altair.SyncAggregate,
     signatureSlot: Slot,
     attestedData: SyncAttestedData
@@ -575,6 +598,105 @@ export class LightClientServer {
 
       if (!isBetterUpdate(nextBestUpdate, prevBestUpdateSummary)) {
         this.metrics?.lightclientServer.updateNotBetter.inc();
+      }
+    }
+
+    const syncCommitteeWitness = await this.db.syncCommitteeWitness.get(attestedData.blockRoot);
+    if (!syncCommitteeWitness) {
+      throw Error(`syncCommitteeWitness not available at ${toHexString(attestedData.blockRoot)}`);
+    }
+    const nextSyncCommittee = await this.db.syncCommittee.get(syncCommitteeWitness.nextSyncCommitteeRoot);
+    if (!nextSyncCommittee) {
+      throw Error("nextSyncCommittee not available");
+    }
+    const nextSyncCommitteeBranch = getNextSyncCommitteeBranch(syncCommitteeWitness);
+    const finalizedHeaderAttested = attestedData.isFinalized
+      ? await this.getFinalizedHeader(attestedData.finalizedCheckpoint.root as Uint8Array)
+      : null;
+
+    let isFinalized, finalityBranch, finalizedHeader;
+
+    if (
+      attestedData.isFinalized &&
+      finalizedHeaderAttested &&
+      computeSyncPeriodAtSlot(finalizedHeaderAttested.beacon.slot) == syncPeriod
+    ) {
+      isFinalized = true;
+      finalityBranch = attestedData.finalityBranch;
+      finalizedHeader = finalizedHeaderAttested;
+
+      // Fork of LightClientUpdate is based off on attested header's fork
+      const attestedFork = this.config.getForkName(attestedHeader.beacon.slot);
+      if (this.config.getForkName(finalizedHeader.beacon.slot) !== attestedFork) {
+        finalizedHeader = upgradeLightClientHeader(this.config, attestedFork, finalizedHeader);
+      }
+    } else {
+      isFinalized = false;
+      finalityBranch = this.zero.finalityBranch;
+      finalizedHeader = this.zero.finalizedHeader;
+    }
+
+    const newUpdate = {
+      attestedHeader,
+      nextSyncCommittee: nextSyncCommittee,
+      nextSyncCommitteeBranch,
+      finalizedHeader,
+      finalityBranch,
+      syncAggregate,
+      signatureSlot,
+    } as allForks.LightClientUpdate;
+
+    // attestedData and the block of syncAggregate may not be in same sync period
+    // should not use attested data slot as sync period
+    // see https://github.com/ChainSafe/lodestar/issues/3933
+    await this.db.bestLightClientUpdate.put(syncPeriod, newUpdate);
+    this.logger.info("Stored new best LightClientUpdate", {
+      syncEpoch,
+      syncPeriod,
+      isFinalized,
+      participation: sumBits(syncAggregate.syncCommitteeBits) / SYNC_COMMITTEE_SIZE,
+    });
+
+    // Count total persisted updates per type. DB metrics don't diff between each type.
+    // The frequency of finalized vs non-finalized is critical to debug if finalizedHeader is not available
+    this.metrics?.lightclientServer.onSyncAggregate.inc({
+      event: isFinalized ? "store_finalized_update" : "store_nonfinalized_update",
+    });
+    this.metrics?.lightclientServer.highestSlot.set(
+      {item: isFinalized ? "best_finalized_update" : "best_nonfinalized_update"},
+      newUpdate.attestedHeader.beacon.slot
+    );
+  }
+
+  private async maybeStoreNewBestEpochUpdate(
+    syncPeriod: SyncPeriod,
+    syncEpoch: Epoch,
+    syncAggregate: altair.SyncAggregate,
+    signatureSlot: Slot,
+    attestedData: SyncAttestedData,
+  ): Promise<void> {
+    const prevBestUpdate = await this.db.bestEpochLightClientUpdate.get(syncEpoch);
+    const {attestedHeader} = attestedData;
+
+    if (prevBestUpdate) {
+      const prevBestUpdateSummary = toLightClientUpdateSummary(prevBestUpdate);
+
+      const nextBestUpdate: LightClientUpdateSummary = {
+        activeParticipants: sumBits(syncAggregate.syncCommitteeBits),
+        attestedHeaderSlot: attestedHeader.beacon.slot,
+        signatureSlot,
+        // The actual finalizedHeader is fetched below. To prevent a DB read we approximate the actual slot.
+        // If update is not finalized finalizedHeaderSlot does not matter (see is_better_update), so setting
+        // to zero to set it some number.
+        finalizedHeaderSlot: attestedData.isFinalized
+          ? computeStartSlotAtEpoch(attestedData.finalizedCheckpoint.epoch)
+          : 0,
+        // All updates include a valid `nextSyncCommitteeBranch`, see below code
+        isSyncCommitteeUpdate: true,
+        isFinalityUpdate: attestedData.isFinalized,
+      };
+
+      if (!isBetterUpdate(nextBestUpdate, prevBestUpdateSummary)) {
         return;
       }
     }
@@ -602,16 +724,16 @@ export class LightClientServer {
       isFinalized = true;
       finalityBranch = attestedData.finalityBranch;
       finalizedHeader = finalizedHeaderAttested;
+
+      // Fork of LightClientUpdate is based off on attested header's fork
+      const attestedFork = this.config.getForkName(attestedHeader.beacon.slot);
+      if (this.config.getForkName(finalizedHeader.beacon.slot) !== attestedFork) {
+        finalizedHeader = upgradeLightClientHeader(this.config, attestedFork, finalizedHeader);
+      }
     } else {
       isFinalized = false;
       finalityBranch = this.zero.finalityBranch;
       finalizedHeader = this.zero.finalizedHeader;
-    }
-
-    // Fork of LightClientUpdate is based off on attested header's fork
-    const attestedFork = this.config.getForkName(attestedHeader.beacon.slot);
-    if (this.config.getForkName(finalizedHeader.beacon.slot) !== attestedFork) {
-      finalizedHeader = upgradeLightClientHeader(this.config, attestedFork, finalizedHeader);
     }
 
     const newUpdate = {
@@ -627,22 +749,13 @@ export class LightClientServer {
     // attestedData and the block of syncAggregate may not be in same sync period
     // should not use attested data slot as sync period
     // see https://github.com/ChainSafe/lodestar/issues/3933
-    await this.db.bestLightClientUpdate.put(syncPeriod, newUpdate);
-    this.logger.debug("Stored new PartialLightClientUpdate", {
+    await this.db.bestEpochLightClientUpdate.put(syncEpoch, newUpdate);
+    this.logger.info("Stored new epoch LightClientUpdate", {
+      syncEpoch,
       syncPeriod,
       isFinalized,
       participation: sumBits(syncAggregate.syncCommitteeBits) / SYNC_COMMITTEE_SIZE,
     });
-
-    // Count total persisted updates per type. DB metrics don't diff between each type.
-    // The frequency of finalized vs non-finalized is critical to debug if finalizedHeader is not available
-    this.metrics?.lightclientServer.onSyncAggregate.inc({
-      event: isFinalized ? "store_finalized_update" : "store_nonfinalized_update",
-    });
-    this.metrics?.lightclientServer.highestSlot.set(
-      {item: isFinalized ? "best_finalized_update" : "best_nonfinalized_update"},
-      newUpdate.attestedHeader.beacon.slot
-    );
   }
 
   private async storeSyncCommittee(

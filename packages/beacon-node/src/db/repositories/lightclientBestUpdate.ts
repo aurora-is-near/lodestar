@@ -4,15 +4,24 @@ import {ssz, SyncPeriod, allForks} from "@lodestar/types";
 
 const SLOT_BYTE_COUNT = 8;
 
+export enum BestLightClientUpdateBucket {
+  PerPeriod = 1,
+  PerEpoch,
+}
+
 /**
  * Best PartialLightClientUpdate in each SyncPeriod
  *
  * Used to prepare light client updates
  */
 export class BestLightClientUpdateRepository extends Repository<SyncPeriod, allForks.LightClientUpdate> {
-  constructor(config: IChainForkConfig, db: IDatabaseController<Uint8Array, Uint8Array>) {
+  constructor(config: IChainForkConfig, db: IDatabaseController<Uint8Array, Uint8Array>, bucket: BestLightClientUpdateBucket) {
     // Pick some type but won't be used
-    super(config, db, Bucket.lightClient_bestLightClientUpdate, ssz.altair.LightClientUpdate);
+    if (bucket == BestLightClientUpdateBucket.PerPeriod) {
+      super(config, db, Bucket.lightClient_bestLightClientUpdate, ssz.altair.LightClientUpdate);
+    } else {
+      super(config, db, Bucket.lightClient_bestEpochLightClientUpdate, ssz.altair.LightClientUpdate);
+    }
   }
 
   // Overrides for multi-fork

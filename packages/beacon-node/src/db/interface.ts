@@ -54,6 +54,7 @@ export interface IBeaconDb {
 
   // lightclient
   bestLightClientUpdate: BestLightClientUpdateRepository;
+  bestEpochLightClientUpdate: BestLightClientUpdateRepository;
   checkpointHeader: CheckpointHeaderRepository;
   syncCommittee: SyncCommitteeRepository;
   syncCommitteeWitness: SyncCommitteeWitnessRepository;

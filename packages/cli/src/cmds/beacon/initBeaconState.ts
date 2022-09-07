@@ -61,12 +61,6 @@ async function initAndVerifyWeakSubjectivityState(
     );
   }
 
-  // Instead of warning user of wss check failure, we throw because user explicity wants to use
-  // the checkpoint sync
-  if (!isWithinWeakSubjectivityPeriod(config, anchorState, anchorCheckpoint)) {
-    throw new Error("Fetched weak subjectivity checkpoint not within weak subjectivity period.");
-  }
-
   anchorState = await initStateFromAnchorState(config, db, logger, anchorState, {
     isWithinWeakSubjectivityPeriod: true,
     isCheckpointState,

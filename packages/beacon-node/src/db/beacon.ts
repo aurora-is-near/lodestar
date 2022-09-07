@@ -11,6 +11,7 @@ import {
   StateArchiveRepository,
   VoluntaryExitRepository,
   BestLightClientUpdateRepository,
+  BestLightClientUpdateBucket,
   CheckpointHeaderRepository,
   SyncCommitteeRepository,
   SyncCommitteeWitnessRepository,
@@ -41,6 +42,7 @@ export class BeaconDb extends DatabaseService implements IBeaconDb {
 
   // lightclient
   bestLightClientUpdate: BestLightClientUpdateRepository;
+  bestEpochLightClientUpdate: BestLightClientUpdateRepository;
   checkpointHeader: CheckpointHeaderRepository;
   syncCommittee: SyncCommitteeRepository;
   syncCommitteeWitness: SyncCommitteeWitnessRepository;
@@ -67,7 +69,8 @@ export class BeaconDb extends DatabaseService implements IBeaconDb {
     this.preGenesisStateLastProcessedBlock = new PreGenesisStateLastProcessedBlock(this.config, this.db);
 
     // lightclient
-    this.bestLightClientUpdate = new BestLightClientUpdateRepository(this.config, this.db);
+    this.bestLightClientUpdate = new BestLightClientUpdateRepository(this.config, this.db, BestLightClientUpdateBucket.PerPeriod);
+    this.bestEpochLightClientUpdate = new BestLightClientUpdateRepository(this.config, this.db, BestLightClientUpdateBucket.PerEpoch);
     this.checkpointHeader = new CheckpointHeaderRepository(this.config, this.db);
     this.syncCommittee = new SyncCommitteeRepository(this.config, this.db);
     this.syncCommitteeWitness = new SyncCommitteeWitnessRepository(this.config, this.db);
