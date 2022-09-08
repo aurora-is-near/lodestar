@@ -1,6 +1,6 @@
 import {altair, phase0, Root, RootHex, Slot, ssz, SyncPeriod, Epoch} from "@lodestar/types";
 import {IChainForkConfig} from "@lodestar/config";
-import {CachedBeaconStateAltair, computeSyncPeriodAtEpoch, computeSyncPeriodAtSlot} from "@lodestar/state-transition";
+import {CachedBeaconStateAltair, computeSyncPeriodAtEpoch, computeSyncPeriodAtSlot, computeEpochAtSlot} from "@lodestar/state-transition";
 import {ILogger} from "@lodestar/utils";
 import {routes} from "@lodestar/api";
 import {BitArray, CompositeViewDU, toHexString} from "@chainsafe/ssz";
@@ -225,8 +225,9 @@ export class LightClientServer {
     // So rootSigned will always equal to the parentBlock.
     const signedBlockRoot = block.parentRoot;
     const syncPeriod = computeSyncPeriodAtSlot(block.slot);
+    const syncEpoch = computeEpochAtSlot(block.slot);
 
-    this.onSyncAggregate(syncPeriod, block.body.syncAggregate, signedBlockRoot).catch((e) => {
+    this.onSyncAggregate(syncPeriod, syncEpoch, block.body.syncAggregate, signedBlockRoot).catch((e) => {
       this.logger.error("Error onSyncAggregate", {}, e);
       this.metrics?.lightclientServer.onSyncAggregate.inc({event: "error"});
     });
@@ -321,14 +322,14 @@ export class LightClientServer {
     let period = Math.floor(epoch/256);
 
     // Signature data
-    const partialUpdate = await this.db.bestPartialLightClientUpdate.get(period);
-    if (!partialUpdate) {
-      throw Error(`No partialUpdate available for period ${period}`);
+    const epochUpdate = await this.db.bestPartialEpochLightClientUpdate.get(epoch);
+    if (!epochUpdate) {
+      throw Error(`No partialUpdate available for epoch ${epoch}`);
     }
 
-    const syncCommitteeWitnessBlockRoot = partialUpdate.isFinalized
-        ? (partialUpdate.finalizedCheckpoint.root as Uint8Array)
-        : partialUpdate.blockRoot;
+    const syncCommitteeWitnessBlockRoot = epochUpdate.isFinalized
+        ? (epochUpdate.finalizedCheckpoint.root as Uint8Array)
+        : epochUpdate.blockRoot;
 
     const syncCommitteeWitness = await this.db.syncCommitteeWitness.get(syncCommitteeWitnessBlockRoot);
     if (!syncCommitteeWitness) {
@@ -340,25 +341,25 @@ export class LightClientServer {
       throw Error("nextSyncCommittee not available");
     }
 
-    if (partialUpdate.isFinalized) {
+    if (epochUpdate.isFinalized) {
       return {
-        attestedHeader: partialUpdate.attestedHeader,
+        attestedHeader: epochUpdate.attestedHeader,
         nextSyncCommittee: nextSyncCommittee,
         nextSyncCommitteeBranch: getNextSyncCommitteeBranch(syncCommitteeWitness),
-        finalizedHeader: partialUpdate.finalizedHeader,
-        finalityBranch: partialUpdate.finalityBranch,
-        syncAggregate: partialUpdate.syncAggregate,
-        forkVersion: this.config.getForkVersion(partialUpdate.attestedHeader.slot),
+        finalizedHeader: epochUpdate.finalizedHeader,
+        finalityBranch: epochUpdate.finalityBranch,
+        syncAggregate: epochUpdate.syncAggregate,
+        forkVersion: this.config.getForkVersion(epochUpdate.attestedHeader.slot),
       };
     } else {
       return {
-        attestedHeader: partialUpdate.attestedHeader,
+        attestedHeader: epochUpdate.attestedHeader,
         nextSyncCommittee: nextSyncCommittee,
         nextSyncCommitteeBranch: getNextSyncCommitteeBranch(syncCommitteeWitness),
         finalizedHeader: this.zero.finalizedHeader,
         finalityBranch: this.zero.finalityBranch,
-        syncAggregate: partialUpdate.syncAggregate,
-        forkVersion: this.config.getForkVersion(partialUpdate.attestedHeader.slot),
+        syncAggregate: epochUpdate.syncAggregate,
+        forkVersion: this.config.getForkVersion(epochUpdate.attestedHeader.slot),
       };
     }
   }
@@ -498,6 +499,7 @@ export class LightClientServer {
    */
   private async onSyncAggregate(
     syncPeriod: SyncPeriod,
+    syncEpoch: Epoch,
     syncAggregate: altair.SyncAggregate,
     signedBlockRoot: Root
   ): Promise<void> {
@@ -513,6 +515,8 @@ export class LightClientServer {
     }
 
     const attestedPeriod = computeSyncPeriodAtSlot(attestedData.attestedHeader.slot);
+    const attestedEpoch = computeEpochAtSlot(attestedData.attestedHeader.slot);
+
     if (syncPeriod !== attestedPeriod) {
       this.logger.debug("attested data period different than signature period", {syncPeriod, attestedPeriod});
       this.metrics?.lightclientServer.onSyncAggregate.inc({event: "ignore_attested_period_diff"});
@@ -558,6 +562,7 @@ export class LightClientServer {
 
     // Check if this update is better, otherwise ignore
     await this.maybeStoreNewBestPartialUpdate(syncPeriod, syncAggregate, attestedData);
+    await this.maybeStoreNewBestPartialEpochUpdate(syncEpoch, syncAggregate, attestedData);
   }
 
   /**
@@ -612,6 +617,46 @@ export class LightClientServer {
       {item: newPartialUpdate.isFinalized ? "best_finalized_update" : "best_nonfinalized_update"},
       newPartialUpdate.attestedHeader.slot
     );
+  }
+
+  private async maybeStoreNewBestPartialEpochUpdate(
+      syncEpoch: Epoch,
+      syncAggregate: altair.SyncAggregate,
+      attestedData: SyncAttestedData
+  ): Promise<void> {
+    const prevBestUpdate = await this.db.bestPartialEpochLightClientUpdate.get(syncEpoch);
+    if (prevBestUpdate && !isBetterUpdate(prevBestUpdate, syncAggregate, attestedData)) {
+      this.metrics?.lightclientServer.updateNotBetter.inc();
+      return;
+    }
+
+    let newPartialUpdate: PartialLightClientUpdate;
+
+    if (attestedData.isFinalized) {
+      // If update if finalized retrieve the previously stored header from DB.
+      // Only checkpoint candidates are stored, and not all headers are guaranteed to be available
+      const finalizedCheckpointRoot = attestedData.finalizedCheckpoint.root as Uint8Array;
+      const finalizedHeader = await this.getFinalizedHeader(finalizedCheckpointRoot);
+      if (finalizedHeader && computeSyncPeriodAtSlot(finalizedHeader.slot) == computeSyncPeriodAtEpoch(syncEpoch)) {
+        // If finalizedHeader is available (should be most times) create a finalized update
+        newPartialUpdate = {...attestedData, finalizedHeader, syncAggregate};
+      } else {
+        // If finalizedHeader is not available (happens on startup) create a non-finalized update
+        newPartialUpdate = {...attestedData, isFinalized: false, syncAggregate};
+      }
+    } else {
+      newPartialUpdate = {...attestedData, syncAggregate};
+    }
+
+    // attestedData and the block of syncAggregate may not be in same sync period
+    // should not use attested data slot as sync period
+    // see https://github.com/ChainSafe/lodestar/issues/3933
+    await this.db.bestPartialEpochLightClientUpdate.put(syncEpoch, newPartialUpdate);
+    this.logger.debug("Stored new PartialEpochLightClientUpdate", {
+      syncEpoch,
+      isFinalized: attestedData.isFinalized,
+      participation: sumBits(syncAggregate.syncCommitteeBits) / SYNC_COMMITTEE_SIZE,
+    });
   }
 
   private async storeSyncCommittee(
