@@ -48,6 +48,7 @@ export interface IBeaconDb {
 
   // lightclient
   bestPartialLightClientUpdate: BestPartialLightClientUpdateRepository;
+  bestPartialEpochLightClientUpdate: BestPartialLightClientUpdateRepository;
   checkpointHeader: CheckpointHeaderRepository;
   syncCommittee: SyncCommitteeRepository;
   syncCommitteeWitness: SyncCommitteeWitnessRepository;

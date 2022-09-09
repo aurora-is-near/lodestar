@@ -50,6 +50,7 @@ export function getStubbedBeaconDb(): IBeaconDb {
 
     // lightclient
     bestPartialLightClientUpdate: createStubInstance(BestPartialLightClientUpdateRepository),
+    bestPartialEpochLightClientUpdate: createStubInstance(BestPartialLightClientUpdateRepository),
     checkpointHeader: createStubInstance(CheckpointHeaderRepository),
     syncCommittee: createStubInstance(SyncCommitteeRepository),
     syncCommitteeWitness: createStubInstance(SyncCommitteeWitnessRepository),
