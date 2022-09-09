@@ -548,23 +548,10 @@ export class LightClientServer {
       return;
     }
 
-    let newPartialUpdate: PartialLightClientUpdate;
 
-    if (attestedData.isFinalized) {
-      // If update if finalized retrieve the previously stored header from DB.
-      // Only checkpoint candidates are stored, and not all headers are guaranteed to be available
-      const finalizedCheckpointRoot = attestedData.finalizedCheckpoint.root as Uint8Array;
-      const finalizedHeader = await this.getFinalizedHeader(finalizedCheckpointRoot);
-      if (finalizedHeader && computeSyncPeriodAtSlot(finalizedHeader.slot) == syncPeriod) {
-        // If finalizedHeader is available (should be most times) create a finalized update
-        newPartialUpdate = {...attestedData, finalizedHeader, syncAggregate};
-      } else {
-        // If finalizedHeader is not available (happens on startup) create a non-finalized update
-        newPartialUpdate = {...attestedData, isFinalized: false, syncAggregate};
-      }
-    } else {
-      newPartialUpdate = {...attestedData, syncAggregate};
-    }
+    let newPartialUpdate = await this.getNewPartialUpdate(syncPeriod,
+        syncAggregate,
+        attestedData);
 
     // attestedData and the block of syncAggregate may not be in same sync period
     // should not use attested data slot as sync period
@@ -598,6 +585,16 @@ export class LightClientServer {
       return;
     }
 
+    let newPartialUpdate = await this.getNewPartialUpdate(computeSyncPeriodAtEpoch(syncEpoch),
+                                                    syncAggregate,
+                                                    attestedData);
+
+    await this.db.bestPartialEpochLightClientUpdate.put(syncEpoch, newPartialUpdate);
+  }
+
+  private async getNewPartialUpdate(syncPeriod: SyncPeriod,
+                                    syncAggregate: altair.SyncAggregate,
+                                    attestedData: SyncAttestedData): Promise<PartialLightClientUpdate> {
     let newPartialUpdate: PartialLightClientUpdate;
 
     if (attestedData.isFinalized) {
@@ -605,7 +602,7 @@ export class LightClientServer {
       // Only checkpoint candidates are stored, and not all headers are guaranteed to be available
       const finalizedCheckpointRoot = attestedData.finalizedCheckpoint.root as Uint8Array;
       const finalizedHeader = await this.getFinalizedHeader(finalizedCheckpointRoot);
-      if (finalizedHeader && computeSyncPeriodAtSlot(finalizedHeader.slot) == computeSyncPeriodAtEpoch(syncEpoch)) {
+      if (finalizedHeader && computeSyncPeriodAtSlot(finalizedHeader.slot) == syncPeriod) {
         // If finalizedHeader is available (should be most times) create a finalized update
         newPartialUpdate = {...attestedData, finalizedHeader, syncAggregate};
       } else {
@@ -616,15 +613,7 @@ export class LightClientServer {
       newPartialUpdate = {...attestedData, syncAggregate};
     }
 
-    // attestedData and the block of syncAggregate may not be in same sync period
-    // should not use attested data slot as sync period
-    // see https://github.com/ChainSafe/lodestar/issues/3933
-    await this.db.bestPartialEpochLightClientUpdate.put(syncEpoch, newPartialUpdate);
-    this.logger.debug("Stored new PartialEpochLightClientUpdate", {
-      syncEpoch,
-      isFinalized: attestedData.isFinalized,
-      participation: sumBits(syncAggregate.syncCommitteeBits) / SYNC_COMMITTEE_SIZE,
-    });
+    return newPartialUpdate;
   }
 
   private async storeSyncCommittee(
