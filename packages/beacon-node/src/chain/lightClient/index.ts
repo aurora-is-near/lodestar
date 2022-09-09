@@ -283,53 +283,21 @@ export class LightClientServer {
       throw Error(`No partialUpdate available for period ${period}`);
     }
 
-    const syncCommitteeWitnessBlockRoot = partialUpdate.blockRoot;
-
-    const syncCommitteeWitness = await this.db.syncCommitteeWitness.get(syncCommitteeWitnessBlockRoot);
-    if (!syncCommitteeWitness) {
-      throw Error(`finalizedBlockRoot not available ${toHexString(syncCommitteeWitnessBlockRoot)}`);
-    }
-
-    const nextSyncCommittee = await this.db.syncCommittee.get(syncCommitteeWitness.nextSyncCommitteeRoot);
-    if (!nextSyncCommittee) {
-      throw Error("nextSyncCommittee not available");
-    }
-
-    if (partialUpdate.isFinalized) {
-      return {
-        attestedHeader: partialUpdate.attestedHeader,
-        nextSyncCommittee: nextSyncCommittee,
-        nextSyncCommitteeBranch: getNextSyncCommitteeBranch(syncCommitteeWitness),
-        finalizedHeader: partialUpdate.finalizedHeader,
-        finalityBranch: partialUpdate.finalityBranch,
-        syncAggregate: partialUpdate.syncAggregate,
-        forkVersion: this.config.getForkVersion(partialUpdate.attestedHeader.slot),
-      };
-    } else {
-      return {
-        attestedHeader: partialUpdate.attestedHeader,
-        nextSyncCommittee: nextSyncCommittee,
-        nextSyncCommitteeBranch: getNextSyncCommitteeBranch(syncCommitteeWitness),
-        finalizedHeader: this.zero.finalizedHeader,
-        finalityBranch: this.zero.finalityBranch,
-        syncAggregate: partialUpdate.syncAggregate,
-        forkVersion: this.config.getForkVersion(partialUpdate.attestedHeader.slot),
-      };
-    }
+    return this.getUpdateFromPartialUpdate(partialUpdate);
   }
 
   async getEpochUpdates(epoch: Epoch): Promise<altair.LightClientUpdate> {
-    let period = Math.floor(epoch/256);
-
     // Signature data
     const epochUpdate = await this.db.bestPartialEpochLightClientUpdate.get(epoch);
     if (!epochUpdate) {
       throw Error(`No partialUpdate available for epoch ${epoch}`);
     }
 
-    const syncCommitteeWitnessBlockRoot = epochUpdate.isFinalized
-        ? (epochUpdate.finalizedCheckpoint.root as Uint8Array)
-        : epochUpdate.blockRoot;
+    return this.getUpdateFromPartialUpdate(epochUpdate);
+  }
+
+  async getUpdateFromPartialUpdate(partial_update: PartialLightClientUpdate): Promise<altair.LightClientUpdate> {
+    const syncCommitteeWitnessBlockRoot = partial_update.blockRoot;
 
     const syncCommitteeWitness = await this.db.syncCommitteeWitness.get(syncCommitteeWitnessBlockRoot);
     if (!syncCommitteeWitness) {
@@ -341,25 +309,25 @@ export class LightClientServer {
       throw Error("nextSyncCommittee not available");
     }
 
-    if (epochUpdate.isFinalized) {
+    if (partial_update.isFinalized) {
       return {
-        attestedHeader: epochUpdate.attestedHeader,
+        attestedHeader: partial_update.attestedHeader,
         nextSyncCommittee: nextSyncCommittee,
         nextSyncCommitteeBranch: getNextSyncCommitteeBranch(syncCommitteeWitness),
-        finalizedHeader: epochUpdate.finalizedHeader,
-        finalityBranch: epochUpdate.finalityBranch,
-        syncAggregate: epochUpdate.syncAggregate,
-        forkVersion: this.config.getForkVersion(epochUpdate.attestedHeader.slot),
+        finalizedHeader: partial_update.finalizedHeader,
+        finalityBranch: partial_update.finalityBranch,
+        syncAggregate: partial_update.syncAggregate,
+        forkVersion: this.config.getForkVersion(partial_update.attestedHeader.slot),
       };
     } else {
       return {
-        attestedHeader: epochUpdate.attestedHeader,
+        attestedHeader: partial_update.attestedHeader,
         nextSyncCommittee: nextSyncCommittee,
         nextSyncCommitteeBranch: getNextSyncCommitteeBranch(syncCommitteeWitness),
         finalizedHeader: this.zero.finalizedHeader,
         finalityBranch: this.zero.finalityBranch,
-        syncAggregate: epochUpdate.syncAggregate,
-        forkVersion: this.config.getForkVersion(epochUpdate.attestedHeader.slot),
+        syncAggregate: partial_update.syncAggregate,
+        forkVersion: this.config.getForkVersion(partial_update.attestedHeader.slot),
       };
     }
   }
