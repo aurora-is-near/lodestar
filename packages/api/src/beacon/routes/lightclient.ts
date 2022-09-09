@@ -42,7 +42,7 @@ export type Api = {
    * - Oldest update
    */
   getUpdates(startPeriod: SyncPeriod, count: number): Promise<{data: altair.LightClientUpdate[]}>;
-  getEpochUpdates(startEpoch: Epoch): Promise<{data: altair.LightClientUpdate}>;
+  getEpochUpdates(startEpoch: Epoch): Promise<{data: LightclientFinalizedUpdate}>;
   /**
    * Returns the latest optimistic head update available. Clients should use the SSE type `light_client_optimistic_update`
    * unless to get the very first head update after syncing, or if SSE are not supported by the server.
@@ -140,7 +140,7 @@ export function getReturnTypes(): ReturnTypes<Api> {
     // Just sent the proof JSON as-is
     getStateProof: sameType(),
     getUpdates: ContainerData(ArrayOf(ssz.altair.LightClientUpdate)),
-    getEpochUpdates: ContainerData(ssz.altair.LightClientUpdate),
+    getEpochUpdates: ContainerData(lightclientFinalizedUpdate),
     getOptimisticUpdate: ContainerData(lightclientHeaderUpdate),
     getFinalityUpdate: ContainerData(lightclientFinalizedUpdate),
     getBootstrap: ContainerData(lightclientSnapshotWithProofType),

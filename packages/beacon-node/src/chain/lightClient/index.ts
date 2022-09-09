@@ -286,14 +286,23 @@ export class LightClientServer {
     return this.getUpdateFromPartialUpdate(partialUpdate);
   }
 
-  async getEpochUpdates(epoch: Epoch): Promise<altair.LightClientUpdate> {
+  async getEpochUpdates(epoch: Epoch): Promise<routes.lightclient.LightclientFinalizedUpdate> {
     // Signature data
     const epochUpdate = await this.db.bestPartialEpochLightClientUpdate.get(epoch);
     if (!epochUpdate) {
       throw Error(`No partialUpdate available for epoch ${epoch}`);
     }
 
-    return this.getUpdateFromPartialUpdate(epochUpdate);
+    if (epochUpdate.isFinalized) {
+      return {
+        attestedHeader: epochUpdate.attestedHeader,
+        finalizedHeader: epochUpdate.finalizedHeader,
+        syncAggregate: epochUpdate.syncAggregate,
+        finalityBranch: epochUpdate.finalityBranch,
+      };
+    } else {
+      throw Error('epoch Update does not contain finalized block');
+    }
   }
 
   async getUpdateFromPartialUpdate(partial_update: PartialLightClientUpdate): Promise<altair.LightClientUpdate> {
