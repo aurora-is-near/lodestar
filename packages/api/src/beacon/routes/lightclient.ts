@@ -39,7 +39,7 @@ export type Api = {
     ApiClientResponse<{
       [HttpStatusCode.OK]: {
         version: ForkName;
-        data: allForks.LightClientFinalityUpdate;
+        data: allForks.LightClientUpdate;
       };
     }>
   >;
@@ -158,8 +158,8 @@ export function getReturnTypes(): ReturnTypes<Api> {
     getUpdates,
     getEpochUpdates: WithVersion((fork: ForkName) =>
       isForkLightClient(fork)
-        ? ssz.allForksLightClient[fork].LightClientFinalityUpdate
-        : ssz.altair.LightClientFinalityUpdate
+        ? ssz.allForksLightClient[fork].LightClientUpdate
+        : ssz.altair.LightClientUpdate
     ),
     getOptimisticUpdate: WithVersion((fork: ForkName) =>
       isForkLightClient(fork)
